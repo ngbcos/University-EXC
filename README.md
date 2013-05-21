@@ -1,6 +1,6 @@
 # Extreme Computing
 
-This repository contains my coursework for the 4th Year [Extreme Computing](http://www.inf.ed.ac.uk/teaching/courses/exc/) course, taken in 2011/2012. There were two pieces of coursework during the CAV course: the first was an essay on cloud infrastructure, specifically a fictional company providing personal computation 'as a service', while the second coursework involved using MapReduce (on the Hadoop infrastructure) to solve problems.
+This repository contains my coursework for the 4th Year [Extreme Computing](http://www.inf.ed.ac.uk/teaching/courses/exc/) course, taken in 2011/2012. There were two pieces of coursework during the EXC course: the first was an essay on cloud infrastructure, specifically a fictional company providing personal computation 'as a service', while the second coursework involved using MapReduce (on the Hadoop infrastructure) to solve problems.
 
 Coursework for other courses can be found in my main [University Coursework](https://github.com/stephenmcgruer/University) repository.
 
