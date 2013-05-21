@@ -1,0 +1,1186 @@
+Matric No: s0840449
+
+########
+Task One
+########
+
+I split the task of applying Naive Bayes into two sections - training the
+classifier based on a training file, and then classifying the input data into
+uppercase/lowercase words.
+
+Training the classifier was straightforward. For each word in the training
+file (large.txt), its five features were calculated (if they existed), and
+their information added to a map of feature --> (uppercase_count,
+lowercase_count); incrementing one of two counters based on the word's case.
+
+The decisions I made for training the data were to:
+
+  * Normalise features to be lowercase - for example, the first-two-letter
+    features "he" and "He" would be treated as the same feature. This was
+    done to make sure that uppercase features contributed to the final
+    classifier - if features were not normalised then no feature that
+    contained an uppercase letter would be matched against an input word
+    feature, and as such the classifier would not actually work!
+
+  * Features are considered identical purely based on their text - that is, a
+    whole-word feature "hey" and a first-3-letter feature "hey" would be
+    considered the same feature. This was done as it increased the accuracy
+    from 88.79% to 89.33%.
+
+To classify the test.txt file, I calculated the features for each input word
+(as in the training), and then computed the products of the probabilities of
+these features being upper or lower case. (i.e. P(f_1|uppercase) * ... *
+P(f_5|uppercase) and P(f_1|lowercase) * ... * P(f_5|lowercase)). The word
+was then capitalized or left along based on whether or not P(word|uppercase) >
+P(word|lowercase)
+
+The decisions I made for classifying the input were to:
+
+  * To not use Laplace smoothing (also known as additive smoothing, see
+    http://en.wikipedia.org/wiki/Additive_smoothing). This was because
+    it actually reduced the accuracy from 89.33% to 89.12%. However,
+    if I were to think about larger data-sets, I would probably use
+    Laplace smoothing, as it corrects the Naive Bayes zero-probability
+    problem.
+
+  * Give a small bias to lowercase outputs, by preferring them over
+    uppercase outputs when P(word|uppercase) = P(word|lowercase). This
+    is a subtle bias and may not have had any effect on the given data,
+    but since lowercase words are more predominant in the tagged output
+    (around 4/5ths lowercase), I think it is the correct choice.
+
+The base accuracy, given by a 'dumb classifier' that just spits out the same
+input as it receives, is actually quite high - 83.73%. My classifier was able
+to achieve an accuracy of 89.33%.
+
+########
+Task Two
+########
+
+I used one MapReduce to convert the training data into a set of
+P(feature|case) outputs.
+
+The mapper took in the input, split each line into individual words, and
+computed the features for these words. Features for each mappers' input were
+tracked in a hashmap of the feature to a count of the upper and lower cases
+of that feature.
+
+The decisions I made for the mapper were to:
+
+  * Not periodically output the hashmap's data when it got too big. I
+    originally had this in place to make sure that the mapper did not have to
+    store too many features in main memory, but it was incredibly slow and I
+    struggled to find the "correct" value to set for the size of the map. If
+    training data was a lot larger it might be worth turning it back on, to
+    sure that the mapper did not run out of memory.
+
+  * Output counts for a feature in one line ("feature upper_count lower_count")
+    rather than in two lines with a 'case' variable ("feature case count");
+    this was done in order to keep the size of the output as compact as
+    possible, in order to allow for scalability.
+
+  * As with the Unix version, I normalised the features and did not tie feature
+    text to feature type (for the same reasons as given above.)
+
+The output from the mapper was then partitioned and sorted as normal (on the
+first part of the output), and sent on to the reducer.
+
+The reducer worked by tracking the current feature, and collating all of the
+data for each feature into a single pair of uppercase and lowercase counts.
+When a new feature was encountered, the uppercase and lowercase probabilities
+were calculated for the previous feature and output.
+
+The decisions I made for the reducer were to:
+
+  * As with the mapper, output probabilities for a feature in one line
+    ("feature upper_prob lower_prob"), rather than in two lines with a 'case'
+    variable ("feature case probability"); this was again done in order to keep
+    the size of the output as compact as possible, in order to allow for
+    scalability.
+
+Some example input/output of Task Two:
+
+    [contents of the training file]
+
+    ** MAPPER **
+
+    an 0 5
+    a 1 5
+    zoo 2 1
+    ...
+    a 3 0
+    zoo 0 1
+
+    ** SORT/PARTITION **
+
+    a 1 5
+    a 3 0
+    an 0 1
+    ...
+    zoo 2 1
+    zoo 0 1
+
+    ** REDUCER **
+
+    a 0.4 0.6
+    an 0.0 1.0
+    ...
+    zoo 0.5 0.5
+
+##########
+Task Three
+##########
+
+I used one Map-Reduce to convert the test file into features.
+
+In the mapper, the test file was read in line by line (i.e. word by word).
+Each word was then split into it's component features, and the word and
+its features were output.
+
+The decisions I made for the mapper were to:
+
+  * Output all of the features for the word on one line (i.e. "word feature1
+    feature2 ... featuren"). This reduced the amount of output that had to be
+    sorted and copied to the reducer.
+
+  * Combine the word and the first feature. Since the first feature is just the
+    word itself, there is no need to output both. Note that this holds even
+    if the word is uppercase (whereas the feature is lowercase), as we do not
+    care about the original casing of the test data.
+
+The output data from the mapper was then sorted and partitioned by the word,
+and sent to the reducer.
+
+The reducer worked by taking each word, and outputting up to 5 (feature, word,
+word_count) tuples for the word. The word count was recorded in order to
+facilitate duplication in Task 4 - see below. Empty features were also ignored.
+
+The decisions I made for the reducer were to:
+
+  * Only output one set of feature, word pairs per word in the test data. It
+    is okay to do this, as if we are planning to calculate p(word|case) based
+    on the product of p(fi|case) for each of the features of the word, having
+    multiple sets of features makes no difference to the comparison - if
+    n*P(word|uppercase) > n*P(word|lowercase), then P(word|uppercase) >
+    P(word|lowercase). The word_count variable allows us to duplicate the word
+    back out later on, at the cost of some excess data (it is attached to every
+    feature-word pair, while we only actually need it once.)
+
+  * Output the tuples with the feature as the key, and the word as the value.
+    This is necessary for Task Four, and is described there.
+
+  * Attach a placeholder value "." to each output line - this is used to tell
+    inputs apart in Task Four. It is slightly inefficient as it pads the output,
+    but is an easy and definite way to tell the probability and feature inputs
+    apart - see Task Four for more details.
+
+Some example input/output of Task Three:
+
+    [contents of the test file]
+
+    ** MAPPER **
+
+    hello lo llo he hel
+    zoo oo zoo zo zoo
+    an an  an               <-- note the blank (i.e. non-existant) features
+    ...
+    hello lo llo he hel
+    hello lo llo he hel
+    an an  an
+
+    ** SORT/PARTITION **
+
+    an an  an 
+    an an  an
+    hello lo llo he hel
+    hello lo llo he hel
+    hello lo llo he hel
+    ...
+    zoo oo zoo zo zoo
+
+    ** REDUCER **
+
+    an an 2 .
+    an an 2 .
+    an an 2 .
+    hello hello 3 .
+    lo hello 3 .
+    llo hello 3 .
+    he hello 3 .
+    hel hello 3 .
+    ...
+    zoo zoo 1 .
+    oo zoo 1 .
+    zoo zoo 1 .
+    zo zoo 1 .
+    zoo zoo 1 .
+
+#########
+Task Four
+#########
+
+I used two Map-Reduces to calculate the correct capitalization for each word.
+The first was used to reduce the model and the test data into a set of
+"word prob_upper prob_lower" tuples, and the second then reduced these
+tuples into the correctly capitalized word.
+
+The first Map-Reduce used an identity mapper, taking in *both* the model
+(output of Task Two) and the test data (output of Task Three), and outputting
+them to the sorter/partitioner. This was possible as both Task Two and Task
+Three had been designed to output the feature as the key. I used a custom
+identity mapper, as I was unable to get Hadoop's built-in mapper to work.
+Combining the model and the test data was done in order to avoid having each
+mapper or reducer load the entire model within the code (i.e. via File.open()),
+which would be very inefficient and wasteful.
+
+The combined data was then sorted/partitioned based on the key (the feature)
+as normal.
+
+The reducer for the first Map-Reduce then went through each feature it
+received, and either stored the word and count that the feature corresponded
+to (e.g. if the line was "lo hello 5 .", {hello, 5} would be stored), or
+stored the probability from the model (e.g. if the line was "lo 0.1 0.9",
+the probabilities P(upper) = 0.1, P(lower) = 0.9 would be stored). Once a new
+feature was encountered, the reducer then output each of the previous feature's
+words and their respective probabilities (e.g. "hello 0.1 0.9 5"), and cleared
+the list of words. If a particular set of features had no training data then
+this is an unknown feature, and so nothing was output - this is equivalent to
+outputting "word 1.0 1.0 word_count".
+
+The second Map-Reduce also used an identity mapper (the same custom one), as
+no further mapping was necessary. The data was then sorted/paritioned based on
+the word, meaning that each reducer got all of the necessary 
+P(word_feature|case) data necessary to calculate P(word|case).
+
+The reducer then calculated the probability P(word|case) for each word it
+received (by starting with P(upper) = 1.0 and P(lower) = 1.0 and multiplying
+in the probabilities it received. Once a new word was encountered, P(upper)
+and P(lower) for the old word were compared and a capitalised/non-capitalised
+version output based on that. The word count was used to output the correct
+number of each word. This slightly crosses over into the realm of Task Five,
+but I felt that it was more efficient to capitalize the words correctly now
+than to run another Map Reduce in Task Five.
+
+Some example input/output of Task Four:
+
+    [contents of the model, and the test data]
+
+    ** MAPPER 1 **
+
+    hello hello 5 .
+    zoo 1.0 0.0
+    oo 0.5 0.5
+    lo hello 5 .
+    llo hello 5 .
+    llo 0.1 0.9
+    he hello 5 .
+    hello 0.5 0.1
+    hel hello 5 .
+    ...
+    zoo zoo 3 .
+    oo zoo 3 .
+    he 0.4 0.6
+    zoo zoo 3 .
+    hel 0.3 0.7
+    zo zoo 3 .
+    zoo zoo 3 .
+
+    ** SORT/PARTITION 1 **
+
+    he 0.4 0.6
+    he hello 5 .
+    hel 0.3 0.7
+    hel hello 5 .
+    hello 0.9 0.1
+    hello hello 5 .
+    llo 0.1 0.9
+    llo hello 5 .
+    lo hello 5 .      <-- note no probabilities for "lo"
+    oo 0.5 0.5
+    oo zoo 3 .
+    ...
+    zoo 1.0 0.0
+    zoo zoo 3 .
+    zoo zoo 3 .
+    zoo zoo 3 .
+    zo zoo  3 .      <-- again no probabilities for "zo"
+
+    ** REDUCER 1 **
+
+    hello 0.4 0.6 5
+    hello 0.3 0.7 5
+    hello 0.9 0.1 5
+    hello 0.1 0.9 5
+    ...
+    zoo 0.5 0.5 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+
+    ** MAPPER 2 **
+
+    hello 0.4 0.6 5
+    hello 0.3 0.7 5
+    hello 0.9 0.1 5
+    hello 0.1 0.9 5
+    ...
+    zoo 0.5 0.5 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+
+    ** SORT/PARTITION 2 **
+    (With this example they're already sorted, but otherwise it
+     would be sorted by the word.)
+
+    hello 0.4 0.6 5
+    hello 0.3 0.7 5
+    hello 0.9 0.1 5
+    hello 0.1 0.9 5
+    ...
+    zoo 0.5 0.5 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+    zoo 1.0 0.0 3
+  
+    ** REDUCER 2 **
+
+    Hello
+    Hello
+    Hello
+    Hello
+    Hello
+    ...
+    Zoo
+    Zoo
+    Zoo
+
+#########
+Task Five
+#########
+
+As Task Four has already capitalized the words, Task Five was a
+straight-forward copy of the data from Task Four to the local machine, followed
+by an accuracy check against test-truth.txt. Verification was done via a small
+Python script, diff.py, to compare my classifiers' output to the test-truth.txt
+file. As with my unix version, the MapReduce naive bayes classifier managed
+89.33% accuracy.
+
+I was not sure if the accuracy checking had to be done using MapReduce, as it
+was not clear from the coursework ("..use Hadoop to convert the lower-case
+words into their correct case and evaluate your results" does not make it clear
+if Hadoop has to be used for just the conversion, or also for the evaluation.)
+As it did not seem like a good task for a MapReduce to complete (as it would
+require all mappers to send their data to a single reducer, which is rather
+inefficient), I simply choose to implement an offline evaluator instead.
+
+The decisions I made when evaluating my classifiers were to:
+
+  * Match the output of the classifier against the expected output based on the
+    case of the first letter of the word. This means that a word like "Eu" would
+    match the expected output "EU". This was done to try and match the
+    coursework task, which was to correctly capitalize the input, not to apply
+    the correct case over the whole input.
+
+  * Make the output accuracy calculation order-irrelevant. This is to match with
+    the Map-Reduce implementation, which may not output words in the correct
+    order.
+
+#############
+Task Programs
+#############
+
+#######
+Task 1.
+#######
+
+--- Main.java ---
+
+package exc;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+
+public class Main {
+    
+    private Main() { 
+        // Non-instantiable.
+    }
+    
+    public static void main(String[] args) {
+        if (args.length != 1) {
+            System.err.println("Usage: java src.Main training_data");
+            return;
+        }
+        
+        File trainingFile = new File(args[0]);
+        if (!trainingFile.exists() || !trainingFile.canRead()) {
+            System.err.println("Unable to open training file '" + args[0] + "' for reading.");
+            return;
+        }
+        
+        try {
+            Map<String, FeatureCount> features = NaiveBayes.train(trainingFile);            
+            List<String> output = NaiveBayes.classify(System.in, features);
+            
+            for (String word : output) {
+                System.out.println(word);
+            }
+        } catch (IOException e) {
+            System.err.println("IOException when trying to read from the training file:");
+            System.err.println(e.getMessage());
+            return;
+        }
+    }
+}
+
+--- NaiveBayes.java --- 
+
+package exc;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+
+public class NaiveBayes {
+    
+    private NaiveBayes() {
+        // Non-instantiable.
+    }
+    
+    /**
+     * 'Trains' the naive bayes on a training file. Does not do full training, merely returns
+     * a map of features to feature counts.
+     * 
+     * A trick is used to encode features with the same text. Whole-word features are left as
+     * normal, but prefix features (e.g. first 2 letters) have a space appended to them, and 
+     * suffix features (e.g. last 2 letters) have a space pre-pended to them.
+     * 
+     * @param trainingFile the file to train on
+     * 
+     * @throws IOException if an {@link IOException} was encountered when reading the file
+     */
+    public static Map<String, FeatureCount> train(File trainingFile) throws IOException {
+        Map<String, FeatureCount> featuresMap = new HashMap<String, FeatureCount>();
+        
+        BufferedReader in = new BufferedReader(new FileReader(trainingFile));
+        
+        String line;
+        while ((line = in.readLine()) != null) {
+            String[] words = line.split("\\s+");
+            
+            for (String word : words) {
+                boolean isUppercase = isUppercase(word);
+                
+                String wordFeatures[] = new String[5];
+                wordFeatures[0] = word.toLowerCase();
+                wordFeatures[1] = getLastNLetters(word, 2);
+                wordFeatures[2] = getLastNLetters(word, 3);
+                wordFeatures[3] = getFirstNLetters(word, 2);
+                wordFeatures[4] = getFirstNLetters(word, 3);
+                
+                for (String feature : wordFeatures) {
+                    // Skip non-existant features.
+                    if (feature == null) {
+                        continue;
+                    }
+                    
+                    if (!featuresMap.containsKey(feature)) {
+                        featuresMap.put(feature, new FeatureCount(feature));
+                    }
+                    if (isUppercase) {
+                        featuresMap.get(feature).incrementUpperCount();
+                    } else {
+                        featuresMap.get(feature).incrementLowerCount();
+                    }
+                }
+                
+            }
+        }
+        return featuresMap;
+    }
+
+    /**
+     * Classifies words from an input stream with regards to a set of training features.
+     * 
+     * @param in the input stream to read from
+     * @param features the set of training features
+     * 
+     * @return a list of capitalized/uncapitalized words
+     */
+    public static List<String> classify(InputStream in, Map<String, FeatureCount> features) {
+        List<String> classifiedWords = new ArrayList<String>();
+        
+        Scanner scanner = new Scanner(in);
+        
+        while (scanner.hasNextLine()) {
+            String word = scanner.nextLine();
+            
+            String wordFeatures[] = new String[5];
+            wordFeatures[0] = word;
+            wordFeatures[1] = getLastNLetters(word, 2);
+            wordFeatures[2] = getLastNLetters(word, 3);
+            wordFeatures[3] = getFirstNLetters(word, 2);
+            wordFeatures[4] = getFirstNLetters(word, 3);
+            
+            float probUpper = 1;
+            float probLower = 1;
+            
+            for (String feature : wordFeatures) {
+                if (!features.containsKey(feature)) {
+                    continue;
+                }
+                
+                FeatureCount featureCount = features.get(feature);
+                
+                probUpper *= featureCount.getUpperProbability();
+                probLower *= featureCount.getLowerProbability();
+            }
+            
+            if (probLower >= probUpper) {
+                classifiedWords.add(word);
+            } else {
+                classifiedWords.add(capitalize(word));
+            }
+        }
+        return classifiedWords;
+    }
+
+    /**
+     * Checks if a given string is uppercase. A string is taken as being
+     * uppercase if *any* character within it is uppercase.
+     * 
+     * @param word the string to check for uppercase-ness
+     */
+    private static boolean isUppercase(String word) {
+        for (char ch : word.toCharArray()) {
+            if (Character.isUpperCase(ch)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Extracts the last n letters from a word, or null if the word length is less than n.
+     * 
+     * @param word the word to extract characters from
+     */
+    private static String getLastNLetters(String word, int n) {
+        if (word.length() < n) {
+            return null;
+        }
+        return word.substring(word.length() - n, word.length()).toLowerCase();
+    }
+
+    /**
+     * Extracts the first n letters from a word, or null if the word length is less than n.
+     * 
+     * @param word the word to extract characters from
+     */
+    private static String getFirstNLetters(String word, int n) {
+        if (word.length() < n) {
+            return null;
+        }
+        return word.substring(0, n).toLowerCase();
+    }
+
+    /**
+     * Capitalizes a word. Assumes that the entire word is lowercase to begin with.
+     * 
+     * @param word the word to capitalize
+     */
+    private static String capitalize(String word) {
+        return word.substring(0, 1).toUpperCase() + word.substring(1);
+    }
+}
+
+--- FeatureCount.java ---
+
+package exc;
+
+/**
+ * A count of lower and upper case instances for a feature string.
+ */
+public class FeatureCount {
+    private String feature;
+    private int lowerCount;
+    private int upperCount;
+    private float upperProbability;
+    private float lowerProbability;
+    private boolean probabiltiesCached;
+
+    public FeatureCount(String feature) {
+        this.feature = feature;
+        
+        this.lowerCount = 0;
+        this.upperCount = 0;
+        this.probabiltiesCached = false;
+    }
+    
+    public void incrementUpperCount() {
+        upperCount++;
+        probabiltiesCached = false;
+    }
+    
+    public void incrementLowerCount() {
+        lowerCount++;
+        probabiltiesCached = false;
+    }
+    
+    public String getFeature() {
+        return feature;
+    }
+    
+    public float getUpperProbability() {
+        if (!probabiltiesCached) {
+            // Compute both, so that the cache can be refreshed.
+            calculateProbabilities();
+        }
+        return upperProbability;
+    }
+    
+    public float getLowerProbability() {
+        if (!probabiltiesCached) {
+            // Compute both, so that the cache can be refreshed.
+            calculateProbabilities();
+        }
+        return lowerProbability;
+    }
+
+    @Override
+    public int hashCode() {
+        final int prime = 31;
+        int result = 1;
+        result = prime * result + ((feature == null) ? 0 : feature.hashCode());
+        return result;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj)
+            return true;
+        if (obj == null)
+            return false;
+        if (getClass() != obj.getClass())
+            return false;
+        FeatureCount other = (FeatureCount) obj;
+        // FeatureCount's are equal based on their feature name, 
+        // not their upper/lower counts.
+        if (feature == null) {
+            if (other.feature != null)
+                return false;
+        } else if (!feature.equals(other.feature))
+            return false;
+        return true;
+    }
+    
+    /**
+     * Calculates and sets the upper and lower probabilities, and caches
+     * them.
+     */
+    private void calculateProbabilities() {
+        if (lowerCount + upperCount == 0) {
+            upperProbability = 0.0f;
+            lowerProbability = 0.0f;
+        }
+        
+        upperProbability = (float) upperCount / (float) (lowerCount + upperCount);
+        lowerProbability = 1 - upperProbability;
+        probabiltiesCached = true;
+    }
+}
+
+#######
+Task 2.
+#######
+(Don't worry, it moves onto Python now. Not that my Python code is that 
+nice - but at least it's not java! ;))
+
+--- run_stage_1.sh ---
+#!/bin/bash
+
+hadoop fs -rmr /user/s0840449/data/output/stage1
+
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar \
+  -input /user/s0840449/data/input/stage1 \
+  -output /user/s0840449/data/output/stage1 \
+  -mapper mapper.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage1/mapper.py \
+  -reducer reducer.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage1/reducer.py 
+
+--- mapper.py ---
+#!/usr/bin/python
+
+# Maps the training data to (feature, upper_count, lower_count) entries.
+
+import sys
+import re
+
+#maxSize = 15000
+
+# Checks for uppercase characters.
+# Note from the coursework description:
+# "any mixed cased words in the test data should be assumed to be just 
+# upper-case initial"
+#
+# There seems to be much confusion over this wording in the coursework,
+# but I've decided to assume it means that any word with a capital
+# is treated as uppercase. Because I prefer to make a decision and
+# clearly state it than to constantly badger a mailing list about it.
+uppercaseReg = re.compile("[A-Z]")
+
+# Returns the last N letters of a string, or None if the string is
+# too short.
+def getLastNLetters(string, n):
+  if len(string) < n:
+    return None
+  return string[-n:].lower()
+
+# Returns the first N letters of a string, or None if the string is
+# too short.
+def getFirstNLetters(string, n):
+  if len(string) < n:
+    return None
+  return string[:n].lower()
+
+# Outputs the (feature, upper_count, lower_count) entries from a map.
+def outputMap(map):
+  for key, value in map.items():
+    print key + "\t" + str(value[0]) + "\t" + str(value[1])
+
+def main():
+  featuresMap = {}
+  for line in sys.stdin:
+    words = line.strip().split()
+    for word in words:
+      features = []
+      features.append(word.lower())
+      features.append(getLastNLetters(word, 2))
+      features.append(getLastNLetters(word, 3))
+      features.append(getFirstNLetters(word, 2))
+      features.append(getFirstNLetters(word, 3))
+
+      for feature in features:
+        # Skip empty features.
+        if feature is None:
+          continue
+
+        # Add the feature to the map if it is not already there.
+        if feature not in featuresMap:
+          featuresMap[feature] = [0,0]
+
+        if re.search(uppercaseReg, word):
+          featuresMap[feature][0] += 1
+        else:
+          featuresMap[feature][1] += 1
+
+      # Make sure that the featuresMap doesnt get too big.
+      # Removed because it's too slow.
+      #if len(featuresMap) > maxSize:
+      #  outputMap(featuresMap)
+      #  featuresMap = {}
+
+  outputMap(featuresMap)
+
+if __name__ == '__main__':
+  main()
+
+
+--- reducer.py ---
+#!/usr/bin/python
+
+# Reduces tuples of (feature, upper_count, lower_count) to one
+# tuple of (feature, upper_prob, lower_prob) per feature.
+
+# Use float division by default.
+from __future__ import division
+
+import sys
+
+# Outputs the tuple of (feature, upper_prob, lower_prob).
+def outputTuple(feature, upperCount, lowerCount):
+  upperProb = upperCount / (upperCount + lowerCount)
+  lowerProb = lowerCount / (upperCount + lowerCount)
+  print feature + "\t" + str(upperProb) + "\t" + str(lowerProb)
+
+def main():
+  previousFeature = None
+  upperCount = 0.0
+  lowerCount = 0.0
+
+  for line in sys.stdin:
+    parts = line.strip().split()
+    feature = parts[0]
+
+    if previousFeature != None and feature != previousFeature:
+      # New feature - output the probabilities for the previous feature.
+      outputTuple(previousFeature, upperCount, lowerCount)
+      upperCount = 0.0
+      lowerCount = 0.0
+
+    # Update the counters.
+    upperCount += float(parts[1])
+    lowerCount += float(parts[2])
+    previousFeature = feature
+
+  # Now output the last feature.
+  outputTuple(previousFeature, upperCount, lowerCount)
+
+if __name__ == '__main__':
+  main()
+
+
+#######
+Task 3.
+#######
+
+--- run_stage_2.sh ---
+#!/bin/bash
+
+hadoop fs -rmr /user/s0840449/data/output/stage2
+
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar \
+  -input /user/s0840449/data/input/stage2 \
+  -output /user/s0840449/data/output/stage2 \
+  -mapper mapper.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage2/mapper.py \
+  -reducer reducer.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage2/reducer.py \
+
+
+--- mapper.py ---
+#!/usr/bin/python
+
+# Maps the test data to tuples of (feature1, feature2, 
+# feature3, feature4, feature5).
+#
+# Note feature1 (roughly) equals word.
+
+import sys
+
+# Returns the last N letters of a string, or None if the string is
+# too short.
+def getLastNLetters(string, n):
+  if len(string) < n:
+    return ""
+  return string[-n:].lower()
+
+# Returns the first N letters of a string, or None if the string is
+# too short.
+def getFirstNLetters(string, n):
+  if len(string) < n:
+    return ""
+  return string[:n].lower()
+
+def main():
+  for line in sys.stdin:
+    word = line.strip()
+
+    # Extract and print the features.
+    output_string = "\t".join([word.lower(),
+                     getLastNLetters(word, 2),
+                     getLastNLetters(word, 3),
+                     getFirstNLetters(word, 2),
+                     getFirstNLetters(word, 3)])
+    print output_string
+
+if __name__ == '__main__':
+  main()
+
+
+--- reducer.py ---
+#!/usr/bin/python
+
+# Reduces multiple tuples of a words' features to a single set of 
+# (feature, word, word_count) tuples (where "word" is unique between
+# each set).
+
+import sys
+
+# Outputs the tuples for a word and it's features.
+def outputTuples(word, features, wordCount):
+  for feature in features:
+    # Skip non-existant features.
+    if feature is None or len(feature) == 0:
+      continue
+
+    # The "." is a marker for Stage 3.
+    print feature + "\t" + word + "\t" + str(wordCount) + "\t."
+  
+
+def main():
+  previousWord = None
+  features = []
+  wordCount = 0
+
+  for line in sys.stdin:
+    parts = line.rstrip("\n").split("\t")
+
+    # Skip empty lines.
+    if len(parts) == 0:
+      continue;
+
+    # The word and the first feature are the same (case insensitively).
+    word = parts[0]
+
+    if previousWord != None and word != previousWord:
+      # A new word, so output the previous one.
+      outputTuples(previousWord, features, wordCount)
+      wordCount = 0
+    features = parts[0:5]
+    wordCount += 1
+    previousWord = word
+  
+  # Output the final word.
+  outputTuples(previousWord, features, wordCount)
+
+if __name__ == '__main__':
+  main()
+
+
+#######
+Task 4.
+#######
+
+--- run_stage_3.sh ---
+#!/bin/bash
+
+# Part 1
+
+hadoop fs -rmr /user/s0840449/data/output/stage3part1
+
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar \
+  -input /user/s0840449/data/output/stage1 \
+  -input /user/s0840449/data/output/stage2 \
+  -output /user/s0840449/data/output/stage3part1 \
+  -mapper mapper.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage3/mapper.py \
+  -reducer reducer1.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage3/reducer1.py 
+
+if [[ $? != 0 ]]; then
+  echo "Error in first part!"
+  exir 1
+fi
+
+# Part 2
+
+hadoop fs -rmr /user/s0840449/data/output/stage3part2
+
+hadoop jar /opt/hadoop/hadoop-0.20.2/contrib/streaming/hadoop-0.20.2-streaming.jar \
+  -input /user/s0840449/data/output/stage3part1 \
+  -output /user/s0840449/data/output/stage3part2 \
+  -mapper mapper.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage3/mapper.py \
+  -reducer reducer2.py \
+  -file ~/Documents/Coursework/EXC-Coursework/MapReduceVersion/stage3/reducer2.py 
+
+# Copy to local for stage 4.
+rm -rf stage3part2output
+hadoop fs -copyToLocal /user/s0840449/data/output/stage3part2 ./stage3part2output
+
+--- mapper.py ---
+#!/usr/bin/python
+
+# The built in Hadoop IdentityMapper doesn't work for some reason, so
+# I'm using a custom one instead. It's probably my fault.
+
+import sys
+
+def main():
+  for line in sys.stdin:
+    print line.strip()
+
+if __name__ == '__main__':
+  main()
+
+--- reducer1.py ---
+#!/usr/bin/python
+
+# Reduces the data from the model - tuples of
+# (feature, upper_prob, lower_prob) - and the 
+# training data - tuples of (feature, word, 
+# count, placeholder) - to a set of (word, 
+# probability) tuples.
+#
+# There may be multiple (word, probability) tuples per word.
+
+from __future__ import division
+import sys
+
+# Outputs the word tuples.
+def outputWords(wordsToClassify, upperProb, lowerProb):
+  for wordToClassify, wordCount in wordsToClassify:
+    print wordToClassify + "\t" + str(upperProb) + "\t" + str(lowerProb) + "\t" + str(wordCount)
+
+def main():
+  previousFeature = None
+  upperProb = None
+  lowerProb = None
+  wordsToClassify = []
+
+  for line in sys.stdin:
+    parts = line.strip().split()
+
+    # Skip empty lines.
+    if not parts:
+      continue
+
+    # The feature is always the first element of an input tuple.
+    feature = parts[0]
+
+    if previousFeature != None and feature != previousFeature:
+      # A new feature. Output the set of words for the previous one, unless
+      # there was no data from the model.
+      if (lowerProb is not None or upperProb is not None):
+        outputWords(wordsToClassify, upperProb, lowerProb)
+      upperProb = None
+      lowerProb = None
+      wordsToClassify = []
+
+    if len(parts) == 3:
+      # The (feature, upper_prob, lower_prob) tuple.
+      upperProb = float(parts[1])
+      lowerProb = float(parts[2])
+    elif len(parts) == 4:
+      # A (feature, word, count, placeholder) tuple. 
+      # The placeholder is ignored.
+      wordsToClassify.append([parts[1], parts[2]])
+    previousFeature = feature
+
+  # Now output the final feature.
+  if (lowerProb is not None or upperProb is not None):
+    outputWords(wordsToClassify, upperProb, lowerProb)
+
+if __name__ == '__main__':
+  main()
+
+--- reducer2.py ---
+#!/usr/bin/python
+
+# Reduces a set of (word, upper_prob, lower_prob) tuples
+# into a single capitalized/non-capitalized output word, 
+# based on the product of the probabilities.
+
+from __future__ import division
+import sys
+import itertools
+
+# Outputs the word, formatted according to the probabilities
+# and the word count.
+def outputWord(word, wordCount, lowerProb, upperProb):
+  if (lowerProb >= upperProb):
+    wordToOutput = word.lower()
+  else:
+    wordToOutput = word.capitalize()
+  for _ in itertools.repeat(None, wordCount):
+    print wordToOutput
+
+def main():
+  previousWord = None
+  upperProb = 1.0
+  lowerProb = 1.0
+  wordCount = 0
+
+  for line in sys.stdin:
+    parts = line.strip().split()
+
+    # Ignore empty lines.
+    if not parts:
+      continue
+
+    word = parts[0].strip()
+
+    if previousWord != None and word != previousWord:
+      # A new word, so output the previous one.
+      outputWord(previousWord, wordCount, lowerProb, upperProb)
+      upperProb = 1.0
+      lowerProb = 1.0
+
+    # Update the probabilities
+    upperProb *= float(parts[1])
+    lowerProb *= float(parts[2])
+    wordCount = int(parts[3])
+    previousWord = word
+
+  # Now output the final word.
+  outputWord(previousWord, wordCount, lowerProb, upperProb)
+
+if __name__ == '__main__':
+  main()
+
+
+#######
+Task 5.
+#######
+
+--- run_stage_4.sh ---
+#!/bin/bash
+
+cat stage3part2output/* > ../classified-mapreduce.txt
+python ../Utilities/diff.py ../classified-mapreduce.txt ../test-truth.txt
+
+--- diff.py ---
+#!/usr/bin/python
+
+import sys
+
+def main(args):
+  if len(args) < 3:
+    print "Usage: python diff.py actualFile expectedFile"
+    sys.exit(1)
+
+  # Read both files into memory, to avoid opening them multiple times.
+  actualWords = []
+  f = open(args[1], "r")
+  for line in f:
+    actualWords.append(line.strip())
+  f.close()
+
+  expectedWords = []
+  f = open(args[2], "r")
+  for line in f:
+    expectedWords.append(line.strip())
+  f.close()
+
+  matches = 0 
+  fails = 0
+
+  # Remove the empty lines.
+  actualWords = filter(lambda x : len(x) > 0, actualWords)
+  expectedWords = filter(lambda x : len(x) > 0, expectedWords)
+
+  for expectedWord in expectedWords:
+    matchFound = False
+    # Attempt to find a match in the classified words, and remove it if it is found.
+    for actualWord in actualWords[:]:
+      # Words are equivalent if they have the same first letter (case sensistive) and
+      # the same rest of word (case insensitive).
+      if expectedWord[0] == actualWord[0] and expectedWord.lower() == actualWord.lower():
+        print "Matched expected word '" + expectedWord + "' to actual word '" + actualWord + "'"
+        matches += 1
+        matchFound = True
+        actualWords.remove(actualWord)
+        break
+
+    if not matchFound:
+      print "No match found for '" + expectedWord+ "'"
+      fails += 1
+
+  accuracy = (float(matches) / float(matches + fails)) * 100 
+  print "Matches: " + str(matches) + ", Fails: " + str(fails)
+  print ("Accuracy: %.2f" % accuracy)
+
+if __name__ == '__main__':
+  main(sys.argv)
